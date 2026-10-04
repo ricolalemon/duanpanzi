@@ -43,6 +43,8 @@ button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
 .order .slots{display:flex;gap:3px}
 .order .slots i{width:12px;height:12px;border-radius:50%;background:rgba(255,255,255,.22)}
 .order .slots i.on{background:var(--gold)}
+.route{position:absolute;left:50%;top:84px;width:170px;height:6px;transform:translateX(-50%);border-radius:3px;background:rgba(59,36,24,.55);overflow:hidden;pointer-events:none}
+.route i{display:block;height:100%;width:0;background:var(--gold);border-radius:3px}
 .big{position:absolute;left:50%;top:230px;transform:translate(-50%,-50%) scale(.7);opacity:0;transition:all .3s cubic-bezier(.2,.9,.3,1.4);pointer-events:none;text-align:center;white-space:nowrap}
 .big.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
 .big b{display:block;font-family:var(--font-title);font-weight:400;font-size:42px;color:#fff;text-shadow:0 4px 0 rgba(120,40,20,.6),0 0 18px rgba(0,0,0,.3)}
@@ -81,8 +83,9 @@ button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
       <button class="rbtn" id="btnPause" type="button" aria-label="暂停">❚❚</button>
     </div>
     <div class="order" id="order"><span id="orderT">第 1 桌</span><span class="slots" id="slots"></span></div>
+    <div class="route" id="route" hidden><i id="routeBar"></i></div>
     <div class="big" id="big"><b></b><span></span></div>
-    <div class="hint" id="hint">左右拖动手指，托盘跟着歪</div>
+    <div class="hint" id="hint">拖到想放的位置，松手放下</div>
   </div>
 </div>
 
@@ -91,10 +94,10 @@ button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
     <h1 class="logo">端盘子</h1>
     <p>你是酒楼新来的跑堂，后厨不停往你托盘上放菜</p>
     <ul>
-      <li>左右拖动手指让托盘倾斜，保持平衡</li>
-      <li>每桌客人要几道菜，凑齐了端稳三秒就算上菜成功</li>
-      <li>掉一道菜碎一个盘子，碎三个就下班</li>
-      <li>小心别的跑堂撞你，西瓜会滚</li>
+      <li>后厨出一道菜，拖到托盘上想放的位置，松手放下。放偏了托盘会往那边沉</li>
+      <li>装好就出发：起步时菜往后滑，刹车时往前冲，手指往右托盘往前倾，往左往后仰</li>
+      <li>托盘下面有水平仪，泡泡在中间菜就稳</li>
+      <li>路上会有小朋友冲出来、台阶、湿地板。掉一道碎一个盘子，碎三个就下班</li>
     </ul>
     <button class="btn" id="btnStart" type="button">开工</button>
     <button class="btn ghost" id="btnBoard" type="button">🏆 今日排行榜</button>
@@ -103,7 +106,6 @@ button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
 </section>
 <div id="modal" hidden></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
 <!--BOARD 五个小游戏共用的每日排行榜（tools/board.html，用 tools/embed-board.mjs 塞进各个游戏）-->
 <style>
 .mb-wrap{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(40,25,20,.5);font-family:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:#33302e;-webkit-user-select:none;user-select:none}
@@ -293,7 +295,6 @@ return api0;
 (async () => {
 'use strict';
 MiniBoard.init({game: 'duanpanzi'});
-const {Engine, Bodies, Body, Composite, Constraint, Events, Vertices} = Matter;
 const $ = id => document.getElementById(id);
 const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
 const TAU = Math.PI * 2;
@@ -302,7 +303,8 @@ const store = {
   get(k, d){ try { const v = localStorage.getItem('dpz:' + k); return v == null ? d : JSON.parse(v); } catch (e){ return d; } },
   set(k, v){ try { localStorage.setItem('dpz:' + k, JSON.stringify(v)); } catch (e){} }
 };
-const W = 420, H = 740, TRAY = {x: 210, y: 500, w: 250}, FLOOR = 712;
+// 画面是 420×740；跑堂站在屏幕左边，托盘在他前面，往右走
+const W = 420, H = 740, FLOOR = 650, TRAY_OFF = 222, WAITER_OFF = 62, TRAY_Y = 452, TRAY_W = 250;
 
 /* ================= 菜 ================= */
 // 形状都是凸的；art 在以重心为原点的坐标里画
@@ -393,57 +395,125 @@ const DISHES = {
 };
 const POOL = [['noodle', 1], ['dumpling', 1], ['teapot', 1], ['steamer', 1], ['bun', 1], ['rice', 1], ['mooncake', 1], ['fish', .8], ['duck', .8], ['jar', .7], ['chop', .5], ['melon', .45]];
 
-/* ================= 物理 ================= */
-let engine, tray, pivot, items = new Set(), G = null;
-function newWorld(){
-  engine = Engine.create();
-  engine.gravity.y = 1;
-  engine.positionIterations = 10;
-  engine.velocityIterations = 8;
-  const base = Bodies.rectangle(TRAY.x, TRAY.y, TRAY.w, 12, {chamfer: {radius: 5}});
-  const lipL = Bodies.rectangle(TRAY.x - TRAY.w / 2 + 3, TRAY.y - 8, 6, 8, {chamfer: {radius: 2}});
-  const lipR = Bodies.rectangle(TRAY.x + TRAY.w / 2 - 3, TRAY.y - 8, 6, 8, {chamfer: {radius: 2}});
-  tray = Body.create({parts: [base, lipL, lipR], friction: .35, frictionStatic: .5, label: 'tray'});
-  Body.setDensity(tray, .02);
-  pivot = Constraint.create({pointA: {x: TRAY.x, y: TRAY.y}, bodyB: tray, pointB: {x: 0, y: 0}, stiffness: 1, length: 0});
-  Composite.add(engine.world, [tray, pivot]);
-  items = new Set();
-  Events.on(engine, 'collisionStart', e => {
-    for (const p of e.pairs){
-      const v = Math.hypot(p.bodyA.velocity.x - p.bodyB.velocity.x, p.bodyA.velocity.y - p.bodyB.velocity.y);
-      if (v > 1.6) Sound.clink(Math.min(1, v / 8));
-    }
-  });
-}
-function addDish(type, x, y){
+/* ================= 托盘上的菜：自己算的物理 ================= */
+// 菜并排放在托盘上（不摞），只会沿着托盘滑：静摩擦扛得住就不动，扛不住就滑，动摩擦慢慢拖住；菜和菜会互相推；
+// 撞到托盘边：慢的停住，快的翻出去。西瓜会滚（摩擦很小）；高的酒坛、筷子筒歪得太厉害会倒
+const GRAV = 1000, LIP = TRAY_W / 2 - 6, OVER = 50;
+const FRICTION = {melon: [.1, .05]};
+const TALL = new Set(['jar', 'chop']);
+// 一道菜的半宽、半高
+function dishSize(type){
   const d = DISHES[type];
-  const opts = {friction: d.friction ?? .28, frictionStatic: .45, restitution: .06, frictionAir: .004};
-  let b, off = {x: 0, y: 0};
-  if (d.circle) b = Bodies.circle(x, y, d.circle, opts);
-  else if (d.rect) b = Bodies.rectangle(x, y, d.rect[0], d.rect[1], {...opts, chamfer: {radius: 4}});
-  else {
-    const vs = d.verts.map(([px, py]) => ({x: px, y: py}));
-    off = Vertices.centre(vs);
-    b = Bodies.fromVertices(x, y, [vs], opts);
+  if (d.circle) return {w: d.circle, h: d.circle};
+  if (d.rect) return {w: d.rect[0] / 2, h: d.rect[1] / 2};
+  const xs = d.verts.map(v => v[0]), ys = d.verts.map(v => v[1]);
+  return {w: (Math.max(...xs) - Math.min(...xs)) / 2, h: (Math.max(...ys) - Math.min(...ys)) / 2};
+}
+const INFO = {};
+function dishInfo(type){
+  if (INFO[type]) return INFO[type];
+  const d = DISHES[type], s = dishSize(type);
+  let c = {x: 0, y: 0};
+  if (d.verts){ const xs = d.verts.map(v => v[0]), ys = d.verts.map(v => v[1]); c = {x: (Math.max(...xs) + Math.min(...xs)) / 2, y: (Math.max(...ys) + Math.min(...ys)) / 2}; }
+  const [ms, mk] = FRICTION[type] || [.38, .3];
+  return (INFO[type] = {w: s.w, h: s.h, c, ms, mk, m: s.w * s.h * 4 * d.density, tall: TALL.has(type)});
+}
+let G = null;
+const trayPose = () => ({x: G.X + TRAY_OFF, y: TRAY_Y + G.dy, a: G.ang});
+// 托盘坐标（沿托盘 u、垂直托盘 v，向上为负）→ 世界坐标
+function trayToWorld(u, v){ const p = trayPose(), c = Math.cos(p.a), s = Math.sin(p.a); return {x: p.x + u * c - v * s, y: p.y + u * s + v * c}; }
+// 托盘上的菜压偏了：重心偏哪边，托盘就往哪边沉
+function loadTorque(){ let s = 0; for (const d of G.dishes) s += d.f.m * d.u / LIP; return s; }
+const sagNow = () => (G.phase === 'load' ? 0 : clamp(loadTorque() * .03, -.15, .15) * G.sagIn);
+// 水平仪：托盘歪的角度和「走路的加速度要你歪的角度」差多少；差 0 菜就不会滑
+const levelErr = () => G.ang - Math.atan((G.phase === 'walk' ? G.a : 0) / GRAV);
+function dishStep(){
+  const th = G.ang, ax = G.phase === 'walk' ? G.a : 0, gy = GRAV - G.ay;
+  const gt = -ax * Math.cos(th) + gy * Math.sin(th), gn = Math.max(0, ax * Math.sin(th) + gy * Math.cos(th));
+  for (const d of [...G.dishes]){
+    const f = d.f;
+    if (Math.abs(d.v) < 3 && Math.abs(gt) <= f.ms * gn) d.v = 0;
+    else {
+      const nv = d.v + (gt - f.mk * gn * Math.sign(d.v || gt)) * STEP;
+      d.v = d.v !== 0 && Math.sign(nv) !== Math.sign(d.v) && Math.abs(gt) <= f.ms * gn ? 0 : nv;
+    }
+    if (d.type === 'melon') d.rot += d.v * STEP / f.h;
+    // 高的东西：歪的比例快到它站得住的极限就开始晃，超过了一会儿就倒
+    if (f.tall){
+      const r = Math.abs(gt) / Math.max(1, gn), lim = f.w / f.h;
+      d.wob += ((r > lim * .6 ? Math.sign(gt) * Math.min(.5, (r - lim * .6) * 1.4) : 0) - d.wob) * .2;
+      d.tip = r > lim ? d.tip + STEP : Math.max(0, d.tip - STEP);
+      if (d.tip > .25){ fall(d, 'tip'); continue; }
+    }
+    d.u += d.v * STEP;
   }
-  Body.setDensity(b, d.density);
-  b.dish = type; b.off = off; b.born = G.t; b.calm = 0; b.counted = false;
-  Composite.add(engine.world, b);
-  items.add(b);
-  return b;
+  // 菜和菜挤在一起：推开，一起走
+  G.dishes.sort((a, b) => a.u - b.u);
+  for (let k = 0; k < 3; k++) for (let i = 0; i + 1 < G.dishes.length; i++){
+    const a = G.dishes[i], b = G.dishes[i + 1], gap = (b.u - b.f.w) - (a.u + a.f.w);
+    if (gap >= 0) continue;
+    const tm = a.f.m + b.f.m;
+    a.u += gap * b.f.m / tm; b.u -= gap * a.f.m / tm;
+    if (a.v > b.v){ if (a.v - b.v > 40) Sound.clink(Math.min(1, (a.v - b.v) / 200)); const v = (a.f.m * a.v + b.f.m * b.v) / tm; a.v = b.v = v; }
+  }
+  // 托盘边
+  for (const d of [...G.dishes]){
+    const lim = d.f.tall ? OVER * .6 : OVER;
+    if (d.u + d.f.w > LIP){ if (d.v > lim) fall(d, 'over'); else { if (d.v > 30) Sound.clink(.4); d.u = LIP - d.f.w; d.v = Math.min(0, d.v); } }
+    else if (d.u - d.f.w < -LIP){ if (-d.v > lim) fall(d, 'over'); else { if (-d.v > 30) Sound.clink(.4); d.u = -LIP + d.f.w; d.v = Math.max(0, d.v); } }
+  }
+}
+// 一道菜离开托盘：变成往下掉的
+function fall(d, why){
+  G.dishes.splice(G.dishes.indexOf(d), 1);
+  const p = trayToWorld(d.u, -(d.f.h + 6)), c = Math.cos(G.ang), s = Math.sin(G.ang);
+  G.falling.push({type: d.type, f: d.f, x: p.x, y: p.y, vx: (G.phase === 'walk' ? G.v : 0) + d.v * c, vy: d.v * s - (why === 'tip' ? 0 : 40), a: G.ang + d.wob, va: (d.v >= 0 ? 1 : -1) * (why === 'tip' ? 5 : 3)});
+  Sound.whoa();
 }
 
 /* ================= 一局 ================= */
+// 一桌：先在出菜口装盘（拖到想放的位置，松手放下），再端着走到桌前。走起来菜会往后滑，刹车会往前冲
 const STEP = 1 / 60;
 function start(){
-  newWorld();
-  G = {t: 0, hearts: 3, served: 0, table: 1, need: 4, onTray: 0, holdT: 0, holding: false, nextDish: 1.2, pending: null, angle: 0, target: 0, bump: null, nextBump: 22, over: false, paused: false, delivering: [], shards: [], fx: [], kept: [], face: 'happy', sweat: 0};
+  G = {t: 0, hearts: 3, served: 0, table: 1, X: 0, v: 0, a: 0, ay: 0, dy: 0, dyV: 0, ang: 0, target: 0, aimX: TRAY_OFF, sagIn: 0, wait: 0, slip: 0, fade: 0, fadeDir: 0, next: 0, dishes: [], falling: [], shards: [], fx: [], kept: [], delivering: [], face: 'happy', sweat: 0, over: false, paused: false};
   $('home').hidden = true;
   closeModal();
-  hud();
-  big('第 1 桌', `客人要 ${G.need} 道菜`);
-  $('hint').style.opacity = 1;
+  newTable();
   Sound.unlock();
+}
+function newTable(){
+  const n = G.table;
+  G.dishes = []; G.falling = []; G.delivering = [];
+  // 这桌的菜：数量随桌数加，但要放得下（不能摞），还要留点空当
+  const want = Math.min(5, 2 + Math.ceil(n / 2));
+  G.order = [];
+  let room = LIP * 2 * .78;
+  for (let k = 0; k < want; k++){
+    let t, tries = 0;
+    do t = pickDish(); while (dishInfo(t).w * 2 + 6 > room && ++tries < 30);
+    if (dishInfo(t).w * 2 + 6 > room) break;
+    G.order.push(t); room -= dishInfo(t).w * 2 + 6;
+  }
+  G.need = G.order.length;
+  G.placed = 0; G.hold = null; G.nextHold = G.t + .8; G.goAt = 0;
+  G.phase = 'load'; G.X = 0; G.v = 0; G.a = 0; G.ay = 0; G.dy = 0; G.dyV = 0; G.ang = 0; G.sagIn = 0; G.wait = 0; G.slip = 0; G.target = 0;
+  G.route = makeRoute(n);
+  big(`第 ${n} 桌`, `要 ${G.need} 道菜 · 先装盘`);
+  $('hint').textContent = '拖到想放的位置，松手放下';
+  $('hint').style.opacity = n <= 2 ? 1 : 0;
+  hud();
+}
+// 一条路：多远、走多快、路上有什么。acc 起步、brake 急刹的加速度（像素/秒²，重力是 1000）：平托盘只扛得住 380，歪对了能扛 1000 以上
+function makeRoute(n){
+  const R = {D: Math.min(1500, 520 + n * 110), vmax: Math.min(340, 200 + n * 14), acc: Math.min(720, 420 + n * 28), brake: Math.min(840, 500 + n * 32), events: [], tables: []};
+  const kinds = ['kid'];
+  if (n >= 3) kinds.push('step');
+  if (n >= 4) kinds.push('wet');
+  const count = n < 2 ? 0 : Math.min(5, Math.floor(n / 1.6));
+  let x = 240 + Math.random() * 80;
+  while (R.events.length < count && x < R.D - 240){ R.events.push({kind: kinds[Math.floor(Math.random() * kinds.length)], x, done: false, t0: 0}); x += 220 + Math.random() * 170; }
+  for (let tx = 320 + Math.random() * 80; tx < R.D - 260; tx += 300 + Math.random() * 120) R.tables.push(tx);
+  return R;
 }
 function pickDish(){
   const pool = POOL.filter(([id]) => !(G.table < 3 && (id === 'melon' || id === 'chop' || id === 'jar')));
@@ -452,85 +522,129 @@ function pickDish(){
   for (const [id, w] of pool){ if ((r -= w) < 0) return id; }
   return pool[0][0];
 }
-function stackTop(){ let top = TRAY.y; for (const b of items) if (!b.flying && b.bounds.min.y < top && b.position.y < TRAY.y + 20) top = b.bounds.min.y; return top; }
+// 手上的菜要放在哪：不能叠，挪到离手指最近、放得下的空当
+function holdPos(){
+  const f = dishInfo(G.hold.type), u = clamp(G.aimX - TRAY_OFF, -LIP + f.w, LIP - f.w);
+  const occ = G.dishes.map(d => [d.u - d.f.w - 2, d.u + d.f.w + 2]).sort((a, b) => a[0] - b[0]);
+  const free = []; let s0 = -LIP;
+  for (const [a, b] of occ){ if (a > s0) free.push([s0, a]); s0 = Math.max(s0, b); }
+  if (LIP > s0) free.push([s0, LIP]);
+  let best = null;
+  for (const [a, b] of free){ if (b - a < f.w * 2) continue; const uu = clamp(u, a + f.w, b - f.w); if (best == null || Math.abs(uu - u) < Math.abs(best - u)) best = uu; }
+  return {u: best ?? u, f};
+}
+function placeHold(){
+  if (!G.hold) return;
+  const p = holdPos();
+  G.dishes.push({type: G.hold.type, f: p.f, u: p.u, v: 0, wob: 0, tip: 0, rot: 0});
+  G.hold = null; G.placed++; G.nextHold = G.t + .3;
+  Sound.place();
+  hud();
+}
+function loadStep(){
+  if (!G.hold && G.placed < G.need && G.t >= G.nextHold){ G.hold = {type: G.order[G.placed], t0: G.t}; Sound.ding(); }
+  if (G.hold && G.t - G.hold.t0 > 6) placeHold();
+  if (G.placed >= G.need && !G.hold){
+    if (!G.goAt) G.goAt = G.t + .8;
+    if (G.t >= G.goAt){
+      G.phase = 'walk';
+      big('出发！', `送到第 ${G.table} 桌`);
+      Sound.go();
+      $('hint').textContent = '起步手指往右，刹车往左 · 看托盘下的水平仪';
+      $('hint').style.opacity = G.table <= 2 ? 1 : 0;
+    }
+  }
+}
+const JERK = 2600;   // 加速度每秒最多变多少，太突然人也接不住
+function walkStep(){
+  const R = G.route;
+  G.sagIn = Math.min(1, G.sagIn + STEP / .8);
+  const kid = R.events.find(e => e.kind === 'kid' && !e.done);
+  // 小朋友：在刚好来得及刹住的地方冲出来
+  if (kid && !kid.t0 && kid.x - 70 - G.X < G.v * G.v / (2 * R.brake) + G.v * .22 + 20){ kid.t0 = G.t; Sound.hey(); }
+  const stopAt = kid && kid.t0 ? kid.x - 70 : R.D;
+  if (G.wait > 0){
+    G.wait -= STEP; G.v = 0; G.a = 0;
+    if (G.wait <= 0 && kid) kid.done = true;
+  } else {
+    const dist = stopAt - G.X;
+    if (G.v < 5 && dist < 24){
+      G.v = 0; G.a = 0;
+      if (kid && kid.t0) G.wait = .8; else { arrive(); return; }
+    } else {
+      // 平时到桌前慢慢停；小朋友冲出来就得急刹
+      const brake = kid && kid.t0 ? R.brake : R.brake * .75;
+      const vt = dist > 0 ? Math.min(R.vmax, Math.sqrt(2 * brake * dist)) : 0;
+      let want = clamp((vt - G.v) * 6, -R.brake, R.acc), jerk = JERK;
+      // 湿地板：脚下一滑，猛地一顿（很急，但看到牌子提前往后仰就接得住）
+      if (G.slip > 0){ G.slip -= STEP; want = -650; jerk = 9000; }
+      G.a += clamp(want - G.a, -jerk * STEP, jerk * STEP);
+      G.v = Math.max(0, G.v + G.a * STEP);
+      G.X += G.v * STEP;
+    }
+  }
+  for (const e of R.events) if (e.kind === 'wet' && !e.done && G.X >= e.x){ e.done = true; G.slip = .22; Sound.slip(); }
+  // 台阶：上去、下来各颠一下
+  const up = R.events.some(e => e.kind === 'step' && G.X >= e.x && G.X <= e.x + 150) ? -12 : 0;
+  const v0 = G.dyV;
+  G.dyV += clamp(clamp((up - G.dy) * .3, -1.4, 1.4) - G.dyV, -.25, .25);
+  G.dy += G.dyV;
+  G.ay = (G.dyV - v0) * 3600;
+}
+// 托盘角度：往手指要的方向转（菜压偏了会往那边沉）
+function turnTray(){
+  const tgt = (G.phase === 'walk' ? G.target : 0) + sagNow();
+  G.ang = clamp(G.ang + clamp((tgt - G.ang) * .2, -.045, .045), -.6, .6);
+}
 function step(){
   G.t += STEP;
-  // 托盘跟着手：设角速度往目标角度转
-  const bumping = G.bump && G.bump.active > 0;
-  if (bumping){ G.bump.active -= STEP; }
-  else Body.setAngularVelocity(tray, clamp((G.target - tray.angle) * .22, -.045, .045));
-  if (Math.abs(tray.angle) > .55) Body.setAngle(tray, clamp(tray.angle, -.55, .55));
-  // 后厨上菜：先在出菜口亮一下，再放下来
-  if (!G.holding && G.onTray < G.need){
-    if (!G.pending && G.t >= G.nextDish){
-      const type = pickDish(), x = TRAY.x + (Math.random() - .5) * 150;
-      G.pending = {type, x, y: Math.max(214, stackTop() - 110), t0: G.t};
-      Sound.ding();
-    }
-    if (G.pending && G.t - G.pending.t0 > .55){
-      addDish(G.pending.type, G.pending.x, G.pending.y);
-      G.pending = null;
-      G.nextDish = G.t + Math.max(1.4, 3.1 - G.table * .18);
-    }
+  if (G.phase === 'load') loadStep();
+  else if (G.phase === 'walk') walkStep();
+  else if (G.phase === 'serve' && G.t >= G.next && !G.fadeDir) G.fadeDir = 1;
+  if (G.phase !== 'walk') G.ay = 0;
+  turnTray();
+  if (G.phase !== 'serve') dishStep();
+  // 往下掉的菜
+  for (const f of [...G.falling]){
+    f.vy += GRAV * STEP; f.x += f.vx * STEP; f.y += f.vy * STEP; f.a += f.va * STEP; f.vx *= .995;
+    if (f.y + f.f.h > FLOOR){ G.falling.splice(G.falling.indexOf(f), 1); crash(f); }
   }
-  // 撞一下
-  if (G.t > G.nextBump && !G.bump){ G.bump = {dir: Math.random() < .5 ? -1 : 1, t0: G.t, hit: false, active: 0}; Sound.hey(); }
-  if (G.bump && !G.bump.hit && G.t - G.bump.t0 > 1.3){
-    G.bump.hit = true; G.bump.active = .22;
-    Body.setAngularVelocity(tray, G.bump.dir * (.07 + Math.min(.05, G.table * .006)));
-    for (const b of items) Body.setVelocity(b, {x: b.velocity.x + G.bump.dir * 1.2, y: b.velocity.y - .6});
-    Sound.bump();
-    buzz(30);
-  }
-  if (G.bump && G.t - G.bump.t0 > 2.4){ G.bump = null; G.nextBump = G.t + Math.max(9, 20 - G.table * 1.2) + Math.random() * 6; }
-  Engine.update(engine, STEP * 1000);
-  // 数一数托盘上稳稳待着的菜，掉地上的摔碎
-  let on = 0, edge = false;
-  for (const b of [...items]){
-    if (b.flying) continue;
-    if (b.position.y > FLOOR){ crash(b); continue; }
-    const rel = rotate(b.position.x - TRAY.x, b.position.y - TRAY.y, -tray.angle);
-    const above = rel.y < 10 && Math.abs(rel.x) < TRAY.w / 2 + 10;
-    if (above && b.speed < .4) b.calm += STEP; else b.calm = 0;
-    if (above && b.calm > .5) on++;
-    if (above && Math.abs(rel.x) > TRAY.w / 2 - 28) edge = true;
-  }
-  G.onTray = on;
+  G.onTray = G.dishes.length;
+  const edge = G.dishes.some(d => Math.abs(d.u) + d.f.w > LIP - 4 && d.v !== 0) || G.dishes.some(d => Math.abs(d.wob) > .15);
   G.sweat = edge ? Math.min(1, G.sweat + STEP * 3) : Math.max(0, G.sweat - STEP * 2);
-  // 凑齐了就要端稳三秒
-  if (on >= G.need && !G.pending){
-    if (!G.holding){ G.holding = true; G.holdT = 0; Sound.tick(); }
-    G.holdT += STEP;
-    if (Math.floor(G.holdT) !== Math.floor(G.holdT - STEP) && G.holdT < 3) Sound.tick();
-    if (G.holdT >= 3) deliver();
-  } else if (G.holding){ G.holding = false; G.holdT = 0; }
-  G.face = G.hearts <= 0 ? 'dizzy' : G.sweat > .4 || Math.abs(tray.angle) > .3 ? 'worried' : G.holding ? 'proud' : 'happy';
+  // 换桌：屏幕暗一下，回到出菜口
+  if (G.fadeDir){
+    G.fade += G.fadeDir * STEP / .35;
+    if (G.fadeDir > 0 && G.fade >= 1){ G.fade = 1; G.fadeDir = -1; if (G.hearts > 0){ G.table++; newTable(); } }
+    else if (G.fadeDir < 0 && G.fade <= 0){ G.fade = 0; G.fadeDir = 0; }
+  }
+  G.face = G.hearts <= 0 ? 'dizzy' : G.sweat > .4 || Math.abs(levelErr()) > .14 ? 'worried' : G.phase === 'serve' ? 'proud' : 'happy';
 }
-const rotate = (x, y, a) => ({x: x * Math.cos(a) - y * Math.sin(a), y: x * Math.sin(a) + y * Math.cos(a)});
-function crash(b){
-  items.delete(b);
-  Composite.remove(engine.world, b);
+function crash(f){
   G.hearts--;
-  G.holding = false; G.holdT = 0;
-  for (let k = 0; k < 16; k++) G.shards.push({x: b.position.x, y: FLOOR, vx: (Math.random() - .5) * 260, vy: -80 - Math.random() * 200, r: Math.random() * TAU, vr: (Math.random() - .5) * 14, life: 1.2, s: 3 + Math.random() * 5, c: Math.random() < .5 ? '#ffffff' : '#9fb6d8'});
+  for (let k = 0; k < 16; k++) G.shards.push({x: f.x, y: FLOOR, vx: (Math.random() - .5) * 260, vy: -80 - Math.random() * 200, r: Math.random() * TAU, vr: (Math.random() - .5) * 14, life: 1.2, s: 3 + Math.random() * 5, c: Math.random() < .5 ? '#ffffff' : '#9fb6d8'});
   Sound.crash();
   buzz([40, 30, 60]);
-  big('啪！', `${DISHES[b.dish].name}摔了`);
+  big('啪！', `${DISHES[f.type].name}摔了`);
   hud();
   if (G.hearts <= 0) setTimeout(gameOver, 900);
 }
-function deliver(){
-  G.holding = false;
-  const list = [...items].filter(b => !b.flying);
+// 到桌了：托盘上的菜一道道端上桌
+function arrive(){
+  G.phase = 'serve';
+  const list = [...G.dishes].sort((a, b) => a.u - b.u), tx = G.X + TRAY_OFF;
+  list.forEach((d, i) => {
+    const p = trayToWorld(d.u, -(d.f.h + 6));
+    const x1 = tx - 62 + (list.length > 1 ? i * 124 / (list.length - 1) : 62);
+    G.delivering.push({type: d.type, f: d.f, t0: G.t + i * .07, x0: p.x, y0: p.y, a0: G.ang, x1, y1: TABLE_TOP - d.f.h * .9});
+    G.kept.push(DISHES[d.type].emoji);
+  });
+  G.dishes = [];
   G.served += list.length;
-  for (const b of list){ b.flying = true; Body.setStatic(b, true); G.delivering.push({b, t0: G.t, x0: b.position.x, y0: b.position.y}); G.kept.push(DISHES[b.dish].emoji); }
-  for (let k = 0; k < 40; k++) G.fx.push({x: TRAY.x + (Math.random() - .5) * 200, y: TRAY.y - 40 - Math.random() * 80, vx: (Math.random() - .5) * 200, vy: -100 - Math.random() * 160, life: 1.2, c: ['#f2b63c', '#d2412c', '#ffffff', '#3fae8c'][k % 4], r: Math.random() * TAU});
+  for (let k = 0; k < 40; k++) G.fx.push({x: tx + (Math.random() - .5) * 200, y: TRAY_Y - 40 - Math.random() * 80, vx: (Math.random() - .5) * 200, vy: -100 - Math.random() * 160, life: 1.2, c: ['#f2b63c', '#d2412c', '#ffffff', '#3fae8c'][k % 4], r: Math.random() * TAU});
   Sound.served();
-  big('上菜！', `第 ${G.table} 桌 · ${list.length} 道`);
-  G.table++;
-  G.need = Math.min(12, 3 + G.table);
-  G.nextDish = G.t + 2.2;
-  setTimeout(() => { if (G && !G.over) big(`第 ${G.table} 桌`, `客人要 ${G.need} 道菜`); }, 1400);
+  big(list.length === G.need ? '上菜！一道没洒' : list.length ? '上菜！' : '全洒了……', `第 ${G.table} 桌 · 送到 ${list.length}/${G.need} 道`);
+  G.next = G.t + 1.8;
   hud();
 }
 function gameOver(){
@@ -572,6 +686,7 @@ function layout(){
   drawBg();
 }
 addEventListener('resize', layout);
+// 不动的部分：墙的颜色、墙裙、地面
 function drawBg(){
   bg = document.createElement('canvas');
   bg.width = cv.width; bg.height = cv.height;
@@ -580,89 +695,167 @@ function drawBg(){
   const g = c.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#7a3e22'); g.addColorStop(.55, '#a8643a'); g.addColorStop(1, '#6a341c');
   c.fillStyle = g; c.fillRect(0, 0, W, H);
-  // 木墙板
-  for (let x = 0; x < W; x += 52){ c.fillStyle = 'rgba(0,0,0,.08)'; c.fillRect(x, 0, 2, FLOOR); c.fillStyle = 'rgba(255,220,180,.05)'; c.fillRect(x + 2, 0, 3, FLOOR); }
-  c.fillStyle = '#5a2c16'; c.fillRect(0, 300, W, 10); c.fillStyle = 'rgba(255,220,180,.12)'; c.fillRect(0, 300, W, 2);
-  // 出菜口
-  const KY = 112;
-  c.fillStyle = '#3a1c10'; c.beginPath(); c.roundRect(110, KY, 200, 70, [10, 10, 0, 0]); c.fill();
-  const gk = c.createLinearGradient(0, KY + 4, 0, KY + 70); gk.addColorStop(0, '#ffcf80'); gk.addColorStop(1, '#c87a3a');
-  c.fillStyle = gk; c.beginPath(); c.roundRect(118, KY + 8, 184, 62, [8, 8, 0, 0]); c.fill();
-  c.fillStyle = 'rgba(80,40,20,.35)'; for (let k = 0; k < 4; k++) c.fillRect(126 + k * 46, KY + 32, 30, 38);
-  c.fillStyle = '#5a2c16'; c.fillRect(100, KY + 68, 220, 12);
-  c.fillStyle = '#c23a2a'; c.beginPath(); c.roundRect(170, KY - 22, 80, 24, 4); c.fill();
-  c.fillStyle = '#ffe9a8'; c.font = '17px "Ma Shan Zheng", serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('出 菜 口', 210, KY - 9);
-  // 菜牌
-  const names = ['红烧肉', '小笼包', '糖醋鱼', '担担面', '东坡肘', '烤鸭'];
-  names.forEach((n, k) => {
-    const x = k < 3 ? 16 + k * 26 : W - 92 + (k - 3) * 26, y = 176;
-    c.fillStyle = '#e9c98f'; c.beginPath(); c.roundRect(x, y, 22, 92, 3); c.fill();
-    c.fillStyle = 'rgba(80,40,10,.25)'; c.fillRect(x + 20, y + 2, 2, 88);
-    c.fillStyle = '#3b2418'; c.font = '15px "Ma Shan Zheng", serif';
-    [...n].forEach((ch, i) => c.fillText(ch, x + 11, y + 16 + i * 22));
-  });
-  // 灯笼
-  for (const x of [52, 368]){
-    c.strokeStyle = '#2a140a'; c.lineWidth = 2; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, 70); c.stroke();
-    const gl = c.createRadialGradient(x - 6, 90, 3, x, 96, 30); gl.addColorStop(0, '#ff9a6a'); gl.addColorStop(1, '#b8221a');
-    c.fillStyle = gl; c.beginPath(); c.ellipse(x, 96, 24, 28, 0, 0, TAU); c.fill();
-    c.fillStyle = '#e8b33a'; c.fillRect(x - 11, 66, 22, 6); c.fillRect(x - 11, 121, 22, 6);
-    c.strokeStyle = '#e8b33a'; c.lineWidth = 1.5; for (let k = -2; k <= 2; k++){ c.beginPath(); c.moveTo(x + k * 3, 127); c.lineTo(x + k * 3, 146); c.stroke(); }
-    c.fillStyle = 'rgba(255,220,120,.18)'; c.beginPath(); c.arc(x, 96, 60, 0, TAU); c.fill();
-  }
-  // 地面
+  c.fillStyle = '#5a2c16'; c.fillRect(0, 330, W, 10); c.fillStyle = 'rgba(255,220,180,.12)'; c.fillRect(0, 330, W, 2);
   const gf = c.createLinearGradient(0, FLOOR, 0, H);
   gf.addColorStop(0, '#5a3220'); gf.addColorStop(1, '#3a1e12');
   c.fillStyle = gf; c.fillRect(0, FLOOR, W, H - FLOOR);
-  c.strokeStyle = 'rgba(255,220,180,.08)'; c.lineWidth = 1;
-  for (let x = -40; x < W + 40; x += 40){ c.beginPath(); c.moveTo(x, FLOOR); c.lineTo(x - 30, H); c.stroke(); }
 }
-function drawWaiter(c){
-  const lean = tray.angle * 40;
-  c.save();
-  // 身子
-  c.fillStyle = '#3d5a80';
-  c.beginPath(); c.moveTo(70 + lean * .3, H); c.quadraticCurveTo(80, 640, 130, 632); c.quadraticCurveTo(180, 640, 192, H); c.fill();
-  c.fillStyle = '#fff'; c.beginPath(); c.moveTo(150, 640); c.quadraticCurveTo(166, 660, 158, 700); c.lineTo(146, 700); c.quadraticCurveTo(152, 664, 140, 644); c.fill();
-  // 举托盘的胳膊
-  const hx = TRAY.x, hy = TRAY.y + 12;
-  c.strokeStyle = '#3d5a80'; c.lineWidth = 22; c.lineCap = 'round';
-  c.beginPath(); c.moveTo(170, 660); c.quadraticCurveTo(205, 620, hx, hy + 24); c.stroke();
-  c.fillStyle = '#f6c9a0'; c.beginPath(); c.ellipse(hx, hy + 6, 16, 10, 0, 0, TAU); c.fill();
-  // 头
-  const x = 128 + lean * .4, y = 594;
-  c.fillStyle = '#f6c9a0'; c.beginPath(); c.arc(x, y, 34, 0, TAU); c.fill();
-  c.fillStyle = '#2a1e18'; c.beginPath(); c.ellipse(x, y - 26, 30, 14, 0, Math.PI, TAU); c.fill();
-  c.fillStyle = '#2a1e18'; c.beginPath(); c.roundRect(x - 26, y - 44, 52, 16, [8, 8, 2, 2]); c.fill();
-  c.fillStyle = '#c23a2a'; c.fillRect(x - 26, y - 32, 52, 4);
-  // 脸
-  c.fillStyle = '#2a1e18'; c.strokeStyle = '#2a1e18'; c.lineWidth = 2.4; c.lineCap = 'round';
-  const f = G ? G.face : 'happy';
-  if (f === 'dizzy'){ for (const s of [-1, 1]){ c.beginPath(); c.moveTo(x + s * 12 - 5, y - 5); c.lineTo(x + s * 12 + 5, y + 5); c.moveTo(x + s * 12 + 5, y - 5); c.lineTo(x + s * 12 - 5, y + 5); c.stroke(); } c.beginPath(); c.arc(x, y + 16, 6, 0, TAU); c.stroke(); }
-  else {
-    for (const s of [-1, 1]){ if (f === 'proud'){ c.beginPath(); c.arc(x + s * 12, y + 1, 5, Math.PI * 1.1, Math.PI * 1.9); c.stroke(); } else { c.beginPath(); c.arc(x + s * 12, y, 3.6, 0, TAU); c.fill(); } }
-    c.beginPath();
-    if (f === 'worried'){ c.arc(x, y + 20, 6, Math.PI * 1.15, Math.PI * 1.85); c.stroke(); c.beginPath(); c.moveTo(x - 17, y - 10); c.lineTo(x - 7, y - 7); c.moveTo(x + 17, y - 10); c.lineTo(x + 7, y - 7); c.stroke(); }
-    else { c.arc(x, y + 10, 8, Math.PI * .15, Math.PI * .85); c.stroke(); }
+const visible = (x, cam, m = 120) => x > cam - m && x < cam + W + m;
+// 跟着走的部分：墙板、灯笼、菜牌、出菜口、桌子
+function drawScene(c, cam, t){
+  for (let x = -(((cam % 52) + 52) % 52); x < W; x += 52){ c.fillStyle = 'rgba(0,0,0,.08)'; c.fillRect(x, 0, 2, FLOOR); c.fillStyle = 'rgba(255,220,180,.05)'; c.fillRect(x + 2, 0, 3, FLOOR); }
+  c.strokeStyle = 'rgba(255,220,180,.08)'; c.lineWidth = 1;
+  for (let x = -(((cam % 44) + 44) % 44) - 44; x < W + 44; x += 44){ c.beginPath(); c.moveTo(x, FLOOR); c.lineTo(x - 30, H); c.stroke(); }
+  c.save(); c.translate(-cam, 0);
+  // 灯笼
+  for (let k = Math.floor((cam - 100) / 280); k * 280 + 40 < cam + W + 100; k++){
+    const x = k * 280 + 40;
+    c.strokeStyle = '#2a140a'; c.lineWidth = 2; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, 54); c.stroke();
+    const gl = c.createRadialGradient(x - 6, 80, 3, x, 86, 30); gl.addColorStop(0, '#ff9a6a'); gl.addColorStop(1, '#b8221a');
+    c.fillStyle = 'rgba(255,220,120,.16)'; c.beginPath(); c.arc(x, 82, 58, 0, TAU); c.fill();
+    c.fillStyle = gl; c.beginPath(); c.ellipse(x, 82, 22, 26, Math.sin(t * 1.3 + k) * .04, 0, TAU); c.fill();
+    c.fillStyle = '#e8b33a'; c.fillRect(x - 10, 54, 20, 6); c.fillRect(x - 10, 105, 20, 6);
   }
-  c.fillStyle = 'rgba(255,120,120,.35)'; c.beginPath(); c.ellipse(x - 20, y + 10, 7, 4, 0, 0, TAU); c.fill(); c.beginPath(); c.ellipse(x + 20, y + 10, 7, 4, 0, 0, TAU); c.fill();
-  if (G && G.sweat > .2){ c.globalAlpha = G.sweat; c.fillStyle = '#9fd8ff'; c.beginPath(); c.moveTo(x + 32, y - 22); c.quadraticCurveTo(x + 40, y - 8, x + 32, y - 4); c.quadraticCurveTo(x + 24, y - 8, x + 32, y - 22); c.fill(); c.globalAlpha = 1; }
-  // 肩上的毛巾
-  c.fillStyle = '#fffaf0'; c.beginPath(); c.moveTo(96, 636); c.quadraticCurveTo(110, 628, 124, 640); c.lineTo(118, 690); c.lineTo(100, 690); c.closePath(); c.fill();
+  // 菜牌
+  const names = ['红烧肉', '小笼包', '糖醋鱼', '担担面', '东坡肘', '烤鸭', '米酒'];
+  for (let k = Math.floor((cam - 200) / 520); k * 520 + 330 < cam + W + 100; k++){
+    const x0 = k * 520 + 330;
+    for (let j = 0; j < 3; j++){
+      const n = names[((k * 3 + j) % names.length + names.length) % names.length], x = x0 + j * 26, y = 186;
+      c.fillStyle = '#e9c98f'; c.beginPath(); c.roundRect(x, y, 22, 92, 3); c.fill();
+      c.fillStyle = '#3b2418'; c.font = '15px "Ma Shan Zheng", serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      [...n].forEach((ch, i) => c.fillText(ch, x + 11, y + 16 + i * 22));
+    }
+  }
+  // 出菜口（出发的地方）
+  if (visible(TRAY_OFF, cam, 200)){
+    const KY = 150, x0 = TRAY_OFF - 100;
+    c.fillStyle = '#3a1c10'; c.beginPath(); c.roundRect(x0, KY, 200, 70, [10, 10, 0, 0]); c.fill();
+    const gk = c.createLinearGradient(0, KY + 4, 0, KY + 70); gk.addColorStop(0, '#ffcf80'); gk.addColorStop(1, '#c87a3a');
+    c.fillStyle = gk; c.beginPath(); c.roundRect(x0 + 8, KY + 8, 184, 62, [8, 8, 0, 0]); c.fill();
+    c.fillStyle = 'rgba(80,40,20,.35)'; for (let k = 0; k < 4; k++) c.fillRect(x0 + 16 + k * 46, KY + 32, 30, 38);
+    c.fillStyle = '#5a2c16'; c.fillRect(x0 - 10, KY + 68, 220, 12);
+    c.fillStyle = '#c23a2a'; c.beginPath(); c.roundRect(TRAY_OFF - 40, KY - 22, 80, 24, 4); c.fill();
+    c.fillStyle = '#ffe9a8'; c.font = '17px "Ma Shan Zheng", serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('出 菜 口', TRAY_OFF, KY - 9);
+    for (let k = 0; k < 3; k++){ const u = (t * .35 + k / 3) % 1; c.fillStyle = `rgba(255,255,255,${.12 * Math.sin(u * Math.PI)})`; c.beginPath(); c.arc(x0 + 40 + k * 60 + Math.sin(t + k) * 8, KY + 14 - u * 40, 14 + u * 14, 0, TAU); c.fill(); }
+  }
+  if (G && G.route){
+    const R = G.route;
+    for (const x of R.tables) if (visible(x + TRAY_OFF, cam)) drawTable(c, x + TRAY_OFF, t, 0);
+    if (visible(R.D + TRAY_OFF, cam, 200)) drawTable(c, R.D + TRAY_OFF, t, G.table);
+    for (const e of R.events){
+      const x = e.x + WAITER_OFF;
+      if (!visible(x, cam, 200)) continue;
+      if (e.kind === 'step'){
+        c.fillStyle = '#7a4424'; c.fillRect(x - 14, FLOOR - 14, 182, 14);
+        c.fillStyle = 'rgba(255,220,180,.25)'; c.fillRect(x - 14, FLOOR - 14, 182, 2);
+        c.fillStyle = 'rgba(0,0,0,.2)'; c.fillRect(x - 14, FLOOR - 2, 182, 2);
+      } else if (e.kind === 'wet'){
+        c.fillStyle = 'rgba(160,210,255,.45)'; c.beginPath(); c.ellipse(x + 10, FLOOR + 6, 46, 6, 0, 0, TAU); c.fill();
+        c.fillStyle = '#ffd23f'; c.beginPath(); c.moveTo(x + 52, FLOOR); c.lineTo(x + 62, FLOOR - 58); c.lineTo(x + 92, FLOOR - 58); c.lineTo(x + 102, FLOOR); c.closePath(); c.fill();
+        c.fillStyle = '#3b2418'; c.font = '700 11px "Noto Sans SC", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('小心', x + 77, FLOOR - 40); c.fillText('地滑', x + 77, FLOOR - 26);
+      }
+    }
+  }
   c.restore();
+}
+const TABLE_TOP = 590;
+// 一张桌子，后面坐着两位客人；要送的那桌立着桌号牌，客人在招手
+function drawTable(c, x, t, num){
+  for (const [dx, col] of [[-40, '#c0504a'], [40, '#4a7a9a']]){
+    c.fillStyle = col; c.beginPath(); c.roundRect(x + dx - 17, TABLE_TOP - 36, 34, 42, 11); c.fill();
+    c.fillStyle = '#f6c9a0'; c.beginPath(); c.arc(x + dx, TABLE_TOP - 48, 13, 0, TAU); c.fill();
+    c.fillStyle = '#2a1e18'; c.beginPath(); c.arc(x + dx, TABLE_TOP - 52, 13, Math.PI, TAU); c.fill();
+    if (num){
+      const w = Math.sin(t * 8 + dx) * .5;
+      c.strokeStyle = '#f6c9a0'; c.lineWidth = 6; c.lineCap = 'round';
+      c.beginPath(); c.moveTo(x + dx + (dx < 0 ? -12 : 12), TABLE_TOP - 28); c.lineTo(x + dx + (dx < 0 ? -22 : 22) + w * 6, TABLE_TOP - 58); c.stroke();
+    }
+  }
+  c.fillStyle = '#6a3414'; c.fillRect(x - 6, TABLE_TOP, 12, FLOOR - TABLE_TOP);
+  c.fillRect(x - 40, FLOOR - 6, 80, 6);
+  c.fillStyle = '#c23a2a'; c.beginPath(); c.roundRect(x - 80, TABLE_TOP - 4, 160, 12, 4); c.fill();
+  c.fillStyle = '#e8473a'; c.beginPath(); c.moveTo(x - 80, TABLE_TOP + 6); for (let k = 0; k <= 8; k++){ c.quadraticCurveTo(x - 80 + k * 20 - 10, TABLE_TOP + 26, x - 80 + k * 20, TABLE_TOP + 6); } c.lineTo(x + 80, TABLE_TOP + 6); c.fill();
+  if (num){
+    c.fillStyle = '#5a2c16'; c.fillRect(x + 92, TABLE_TOP - 70, 4, FLOOR - TABLE_TOP + 70);
+    c.fillStyle = '#ffe9a8'; c.beginPath(); c.roundRect(x + 72, TABLE_TOP - 100, 46, 34, 6); c.fill();
+    c.strokeStyle = '#c23a2a'; c.lineWidth = 2; c.stroke();
+    c.fillStyle = '#c23a2a'; c.font = '800 15px "Noto Sans SC", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(`${num}号桌`, x + 95, TABLE_TOP - 83);
+  }
+}
+// 小朋友：躲在前面，跑堂快到的时候冲出来
+function drawKid(c, e, t){
+  const run = e.t0 ? G.t - e.t0 : 0, x = e.x + WAITER_OFF + 200 - run * 230;
+  if (run > 3) return;
+  const y = FLOOR, ph = run * 18;
+  c.strokeStyle = '#2a3a5a'; c.lineWidth = 6; c.lineCap = 'round';
+  for (const s of [1, -1]){ const a = e.t0 ? Math.sin(ph) * .6 * s : 0; c.beginPath(); c.moveTo(x, y - 28); c.lineTo(x + Math.sin(a) * 26, y - 3); c.stroke(); }
+  c.fillStyle = '#ffb02e'; c.beginPath(); c.roundRect(x - 11, y - 54, 22, 30, 8); c.fill();
+  c.fillStyle = '#f6c9a0'; c.beginPath(); c.arc(x, y - 66, 12, 0, TAU); c.fill();
+  c.fillStyle = '#2a1e18'; c.beginPath(); c.arc(x, y - 70, 12, Math.PI * .95, TAU * 1.02); c.fill();
+  c.fillStyle = '#2a1e18'; c.beginPath(); c.arc(x - 5, y - 66, 1.8, 0, TAU); c.fill();
+  if (e.t0 && run < 1.6){ c.fillStyle = '#fff3d6'; c.beginPath(); c.roundRect(x - 13, y - 104, 26, 26, 8); c.fill(); c.fillStyle = '#c23a2a'; c.font = '900 20px "Noto Sans SC", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('!', x, y - 90); }
+}
+function drawWaiter(c, x, t){
+  const walking = G && G.phase === 'walk' && G.vel > 5;
+  const ph = G ? G.X / 20 : 0, bob = walking ? -Math.abs(Math.sin(ph)) * 3 : 0;
+  const fy = FLOOR + (G ? G.dy : 0), hip = fy - 82 + bob;
+  // 腿
+  c.lineCap = 'round';
+  for (const s of [-1, 1]){
+    const a = walking ? Math.sin(ph) * .42 * s : 0, fx = x + Math.sin(a) * 78;
+    c.strokeStyle = '#2a2f45'; c.lineWidth = 14; c.beginPath(); c.moveTo(x, hip); c.lineTo(fx, fy - 8); c.stroke();
+    c.fillStyle = '#1a1410'; c.beginPath(); c.ellipse(fx + 6, fy - 5, 12, 6, 0, 0, TAU); c.fill();
+  }
+  // 身子、围裙
+  c.fillStyle = '#3d5a80'; c.beginPath(); c.roundRect(x - 25, hip - 96, 50, 104, 16); c.fill();
+  c.fillStyle = '#fffaf0'; c.beginPath(); c.roundRect(x + 2, hip - 60, 24, 66, [4, 10, 10, 4]); c.fill();
+  // 后面那只手搭着毛巾
+  c.strokeStyle = '#34507a'; c.lineWidth = 12; c.beginPath(); c.moveTo(x - 12, hip - 82); c.quadraticCurveTo(x - 30, hip - 50, x - 16, hip - 24); c.stroke();
+  c.fillStyle = '#fffaf0'; c.beginPath(); c.moveTo(x - 24, hip - 40); c.lineTo(x - 6, hip - 40); c.lineTo(x - 9, hip - 8); c.lineTo(x - 21, hip - 8); c.closePath(); c.fill();
+  // 举托盘的手
+  const tp = G ? trayPose() : {x: x - WAITER_OFF + TRAY_OFF, y: TRAY_Y}, hx = tp.x - 30, hy = tp.y + 12;
+  c.strokeStyle = '#3d5a80'; c.lineWidth = 13;
+  c.beginPath(); c.moveTo(x + 12, hip - 82); c.quadraticCurveTo(x + 58, hip - 64, hx, hy + 8); c.stroke();
+  c.fillStyle = '#f6c9a0'; c.beginPath(); c.ellipse(hx, hy + 2, 13, 8, 0, 0, TAU); c.fill();
+  // 头
+  const hxh = x + 4, hyh = hip - 122;
+  c.fillStyle = '#f6c9a0'; c.beginPath(); c.arc(hxh, hyh, 25, 0, TAU); c.fill();
+  c.fillStyle = '#2a1e18'; c.beginPath(); c.ellipse(hxh - 4, hyh - 18, 24, 11, 0, Math.PI, TAU); c.fill();
+  c.beginPath(); c.roundRect(hxh - 22, hyh - 34, 44, 13, [7, 7, 2, 2]); c.fill();
+  c.fillStyle = '#c23a2a'; c.fillRect(hxh - 22, hyh - 24, 44, 3);
+  const f = G ? G.face : 'happy';
+  c.fillStyle = '#2a1e18'; c.strokeStyle = '#2a1e18'; c.lineWidth = 2.2;
+  const ex = hxh + 12, ey = hyh - 2;
+  if (f === 'dizzy'){ c.beginPath(); c.moveTo(ex - 4, ey - 4); c.lineTo(ex + 4, ey + 4); c.moveTo(ex + 4, ey - 4); c.lineTo(ex - 4, ey + 4); c.stroke(); }
+  else if (f === 'proud'){ c.beginPath(); c.arc(ex, ey + 1, 4, Math.PI * 1.1, Math.PI * 1.9); c.stroke(); }
+  else { c.beginPath(); c.arc(ex, ey, 3, 0, TAU); c.fill(); }
+  c.beginPath();
+  if (f === 'worried'){ c.arc(hxh + 12, hyh + 16, 5, Math.PI * 1.15, Math.PI * 1.85); c.stroke(); c.beginPath(); c.moveTo(ex - 6, ey - 9); c.lineTo(ex + 4, ey - 7); c.stroke(); }
+  else { c.arc(hxh + 10, hyh + 8, 6, Math.PI * .15, Math.PI * .85); c.stroke(); }
+  c.fillStyle = 'rgba(255,120,120,.35)'; c.beginPath(); c.ellipse(hxh + 4, hyh + 9, 6, 3.5, 0, 0, TAU); c.fill();
+  if (G && G.sweat > .2){ c.globalAlpha = G.sweat; c.fillStyle = '#9fd8ff'; c.beginPath(); c.moveTo(hxh - 20, hyh - 14); c.quadraticCurveTo(hxh - 13, hyh - 2, hxh - 20, hyh + 2); c.quadraticCurveTo(hxh - 27, hyh - 2, hxh - 20, hyh - 14); c.fill(); c.globalAlpha = 1; }
 }
 function drawTray(c){
-  c.save(); c.translate(tray.position.x, tray.position.y); c.rotate(tray.angle);
-  c.fillStyle = 'rgba(0,0,0,.22)'; c.beginPath(); c.roundRect(-TRAY.w / 2 + 4, 4, TRAY.w - 8, 10, 5); c.fill();
+  const tp = trayPose();
+  c.save(); c.translate(tp.x, tp.y); c.rotate(tp.a);
+  c.fillStyle = 'rgba(0,0,0,.22)'; c.beginPath(); c.roundRect(-TRAY_W / 2 + 4, 4, TRAY_W - 8, 10, 5); c.fill();
   const g = c.createLinearGradient(0, -6, 0, 6); g.addColorStop(0, '#d8913f'); g.addColorStop(1, '#8a4a1a');
-  c.fillStyle = g; c.beginPath(); c.roundRect(-TRAY.w / 2, -6, TRAY.w, 12, 5); c.fill();
-  c.fillStyle = 'rgba(255,230,190,.45)'; c.fillRect(-TRAY.w / 2 + 6, -5, TRAY.w - 12, 2);
-  c.fillStyle = '#7a3c12'; c.beginPath(); c.roundRect(-TRAY.w / 2, -12, 6, 10, 2); c.fill(); c.beginPath(); c.roundRect(TRAY.w / 2 - 6, -12, 6, 10, 2); c.fill();
+  c.fillStyle = g; c.beginPath(); c.roundRect(-TRAY_W / 2, -6, TRAY_W, 12, 5); c.fill();
+  c.fillStyle = 'rgba(255,230,190,.45)'; c.fillRect(-TRAY_W / 2 + 6, -5, TRAY_W - 12, 2);
+  c.fillStyle = '#7a3c12'; c.beginPath(); c.roundRect(-TRAY_W / 2, -12, 6, 10, 2); c.fill(); c.beginPath(); c.roundRect(TRAY_W / 2 - 6, -12, 6, 10, 2); c.fill();
+  // 水平仪：泡泡在中间菜就不会滑
+  if (G && G.phase !== 'load'){
+    const e = levelErr(), bx = clamp(-e * 140, -30, 30), col = Math.abs(e) < .05 ? '#7ee08a' : Math.abs(e) < .12 ? '#ffd23f' : '#ff6b5a';
+    c.fillStyle = 'rgba(255,255,255,.85)'; c.beginPath(); c.roundRect(-40, 10, 80, 13, 6.5); c.fill();
+    c.strokeStyle = 'rgba(60,30,10,.4)'; c.lineWidth = 1; c.beginPath(); c.moveTo(-7, 11); c.lineTo(-7, 22); c.moveTo(7, 11); c.lineTo(7, 22); c.stroke();
+    c.fillStyle = col; c.beginPath(); c.ellipse(bx, 16.5, 8, 4.5, 0, 0, TAU); c.fill();
+  }
   c.restore();
 }
-function drawDish(c, b, alpha = 1, scale = 1){
-  c.save(); c.globalAlpha = alpha; c.translate(b.position.x, b.position.y); c.rotate(b.angle); c.scale(scale, scale); c.translate(-b.off.x, -b.off.y);
-  DISHES[b.dish].art(c);
+function drawDishAt(c, type, off, x, y, a, alpha = 1, scale = 1){
+  c.save(); c.globalAlpha = alpha; c.translate(x, y); c.rotate(a); c.scale(scale, scale); c.translate(-off.x, -off.y);
+  DISHES[type].art(c);
   c.restore();
 }
 function draw(now){
@@ -670,48 +863,32 @@ function draw(now){
   c.setTransform(1, 0, 0, 1, 0, 0);
   if (bg) c.drawImage(bg, 0, 0);
   c.setTransform(S, 0, 0, S, 0, 0);
+  const t = now / 1000, cam = G ? G.X : 0;
+  drawScene(c, cam, t);
   if (!G) return;
-  const t = now / 1000;
-  // 出菜口的热气
-  for (let k = 0; k < 3; k++){ const u = (t * .35 + k / 3) % 1; c.fillStyle = `rgba(255,255,255,${.12 * Math.sin(u * Math.PI)})`; c.beginPath(); c.arc(150 + k * 60 + Math.sin(t + k) * 8, 126 - u * 40, 14 + u * 14, 0, TAU); c.fill(); }
-  // 后厨马上要放的菜：先在空中虚着显示
-  if (G.pending){
-    const p = G.pending, d = DISHES[p.type], u = Math.min(1, (G.t - p.t0) / .55);
-    c.save(); c.globalAlpha = .35 + u * .5; c.translate(p.x, p.y); if (d.verts){ const off = Vertices.centre(d.verts.map(([x, y]) => ({x, y}))); c.translate(-off.x, -off.y); } d.art(c); c.restore();
-    c.save(); c.setLineDash([4, 6]); c.strokeStyle = 'rgba(255,240,200,.5)'; c.lineWidth = 2; c.beginPath(); c.moveTo(p.x, p.y + 24); c.lineTo(p.x, TRAY.y - 14); c.stroke(); c.restore();
+  c.save(); c.translate(-cam, 0);
+  // 上了桌的菜
+  for (const d of G.delivering){
+    const u = clamp((G.t - d.t0) / .55, 0, 1), e = u * u * (3 - 2 * u);
+    drawDishAt(c, d.type, d.f.c, d.x0 + (d.x1 - d.x0) * e, d.y0 + (d.y1 - d.y0) * e - Math.sin(u * Math.PI) * 50, d.a0 * (1 - e), 1, 1 - e * .25);
   }
-  drawWaiter(c);
+  drawWaiter(c, G.X + WAITER_OFF, t);
   drawTray(c);
-  for (const b of items) if (!b.flying) drawDish(c, b);
-  for (let k = G.delivering.length - 1; k >= 0; k--){
-    const d = G.delivering[k], u = (G.t - d.t0) / .8;
-    if (u >= 1){ items.delete(d.b); Composite.remove(engine.world, d.b); G.delivering.splice(k, 1); continue; }
-    const e = u * u;
-    Body.setPosition(d.b, {x: d.x0 + e * 360, y: d.y0 - Math.sin(u * Math.PI) * 60 - e * 40});
-    drawDish(c, d.b, 1 - u * .5, 1 - u * .3);
+  for (const d of G.dishes){ const p = trayToWorld(d.u, -(d.f.h + 6)); drawDishAt(c, d.type, d.f.c, p.x, p.y, G.ang + d.wob + d.rot); }
+  for (const f of G.falling) drawDishAt(c, f.type, f.f.c, f.x, f.y, f.a);
+  // 手上拿着、还没放下的菜
+  if (G.hold){
+    const p = holdPos(), age = G.t - G.hold.t0, at = trayToWorld(p.u, -(p.f.h + 6));
+    c.save(); c.setLineDash([4, 6]); c.strokeStyle = 'rgba(255,240,200,.55)'; c.lineWidth = 2; c.beginPath(); c.moveTo(at.x, at.y - 50); c.lineTo(at.x, at.y); c.stroke(); c.restore();
+    c.save(); c.globalAlpha = .25; c.fillStyle = '#fff'; c.beginPath(); c.ellipse(at.x, at.y + p.f.h, p.f.w, 4, 0, 0, TAU); c.fill(); c.restore();
+    drawDishAt(c, G.hold.type, p.f.c, at.x, at.y - 56 + Math.sin(t * 5) * 2, 0, .92);
+    if (age > 3){ const u = (age - 3) / 3; c.strokeStyle = '#f2b63c'; c.lineWidth = 3; c.beginPath(); c.arc(at.x, at.y - 100 - p.f.h, 9, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - u)); c.stroke(); }
   }
-  // 撞人预警
-  if (G.bump){
-    const u = G.t - G.bump.t0, x = G.bump.dir < 0 ? 18 : W - 18;
-    if (!G.bump.hit){
-      c.save(); c.globalAlpha = .6 + .4 * Math.sin(u * 18);
-      c.fillStyle = '#fff3d6'; c.beginPath(); c.roundRect(G.bump.dir < 0 ? 8 : W - 118, 410, 110, 40, 12); c.fill();
-      c.fillStyle = '#c23a2a'; c.font = '20px "ZCOOL KuaiLe", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(G.bump.dir < 0 ? '让一让！→' : '← 让一让！', G.bump.dir < 0 ? 63 : W - 63, 431);
-      c.restore();
-    }
-  }
-  // 端稳倒计时
-  if (G.holding){
-    const left = Math.max(0, 3 - G.holdT);
-    c.save(); c.translate(TRAY.x, stackTop() - 46);
-    c.fillStyle = 'rgba(59,36,24,.85)'; c.beginPath(); c.arc(0, 0, 26, 0, TAU); c.fill();
-    c.strokeStyle = '#f2b63c'; c.lineWidth = 5; c.beginPath(); c.arc(0, 0, 26, -Math.PI / 2, -Math.PI / 2 + TAU * (G.holdT / 3)); c.stroke();
-    c.fillStyle = '#fff'; c.font = '800 24px "Baloo 2", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(String(Math.ceil(left)), 0, 2);
-    c.restore();
-  }
-  // 碎片、彩纸
+  if (G.route) for (const e of G.route.events) if (e.kind === 'kid' && (!e.done || G.t - e.t0 < 3)) drawKid(c, e, t);
   for (const s of G.shards){ c.save(); c.globalAlpha = Math.min(1, s.life * 2); c.translate(s.x, s.y); c.rotate(s.r); c.fillStyle = s.c; c.beginPath(); c.moveTo(-s.s, 0); c.lineTo(0, -s.s * .6); c.lineTo(s.s, s.s * .4); c.closePath(); c.fill(); c.restore(); }
   for (const f of G.fx){ c.save(); c.globalAlpha = Math.min(1, f.life * 1.5); c.translate(f.x, f.y); c.rotate(f.r); c.fillStyle = f.c; c.fillRect(-4, -2, 8, 4); c.restore(); }
+  c.restore();
+  if (G.fade > 0){ c.fillStyle = `rgba(30,14,6,${G.fade})`; c.fillRect(0, 0, W, H); }
 }
 function updateFx(dt){
   if (!G) return;
@@ -736,10 +913,13 @@ function hud(){
   hudLite();
 }
 function hudLite(){
-  $('orderT').textContent = `第 ${G.table} 桌 · 要 ${G.need} 道`;
+  const load = G.phase === 'load';
+  $('orderT').textContent = load ? `第 ${G.table} 桌 · 装盘 ${G.placed}/${G.need}` : `第 ${G.table} 桌 · 托盘上 ${G.onTray}/${G.need}`;
   const s = $('slots');
   if (s.children.length !== G.need){ s.replaceChildren(); for (let k = 0; k < G.need; k++) s.appendChild(el('i')); }
-  [...s.children].forEach((i, k) => i.classList.toggle('on', k < G.onTray));
+  [...s.children].forEach((i, k) => i.classList.toggle('on', k < (load ? G.placed : G.onTray)));
+  $('route').hidden = load;
+  $('routeBar').style.width = (G.route ? clamp(G.X / G.route.D, 0, 1) * 100 : 0) + '%';
 }
 let bigT = 0;
 function big(a, b){ const e = $('big'); e.querySelector('b').textContent = a; e.querySelector('span').textContent = b; e.classList.add('show'); clearTimeout(bigT); bigT = setTimeout(() => e.classList.remove('show'), 1300); }
@@ -766,22 +946,42 @@ $('btnPause').addEventListener('click', pause);
 document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
 
 /* ================= 操作 ================= */
-// 手指在屏幕左右的位置决定托盘歪多少；松手就停在那里
+// 装盘的时候：手指左右挪选位置，松手放下。走路的时候：手指在屏幕左右的位置决定托盘歪多少，松手就停在那里
 let touching = false, gyro = false;
-function aimFrom(e){ const r = cv.getBoundingClientRect(); const u = (e.clientX - r.left) / r.width; G.target = clamp((u - .5) * 1.1, -.42, .42); }
-cv.addEventListener('pointerdown', e => { if (!G || G.over || G.paused) return; Sound.unlock(); touching = true; cv.setPointerCapture(e.pointerId); aimFrom(e); if (G.t > 2) $('hint').style.opacity = 0; });
-cv.addEventListener('pointermove', e => { if (touching || e.pointerType === 'mouse'){ if (G && !G.over && !G.paused && !gyro) aimFrom(e); } });
-cv.addEventListener('pointerup', () => { touching = false; });
+const worldX = e => { const r = cv.getBoundingClientRect(); return (e.clientX - r.left) / r.width * W + (G ? G.X : 0); };
+function aimFrom(e){ const r = cv.getBoundingClientRect(); const u = (e.clientX - r.left) / r.width; G.target = clamp((u - .5) * 1.3, -.5, .5); }
+const live = () => G && !G.over && !G.paused;
+cv.addEventListener('pointerdown', e => {
+  if (!live()) return;
+  Sound.unlock(); touching = true; cv.setPointerCapture(e.pointerId);
+  if (G.phase === 'load') G.aimX = worldX(e); else if (!gyro) aimFrom(e);
+});
+cv.addEventListener('pointermove', e => {
+  if (!live() || !(touching || e.pointerType === 'mouse')) return;
+  if (G.phase === 'load') G.aimX = worldX(e); else if (!gyro) aimFrom(e);
+});
+cv.addEventListener('pointerup', () => { touching = false; if (live() && G.phase === 'load' && G.hold) placeHold(); });
 cv.addEventListener('pointercancel', () => { touching = false; });
-addEventListener('keydown', e => { if (!G) return; if (e.key === 'ArrowLeft') G.target = clamp(G.target - .06, -.42, .42); if (e.key === 'ArrowRight') G.target = clamp(G.target + .06, -.42, .42); if (e.key === 'Escape') pause(); });
-// 歪手机控制
-function onTilt(e){ if (!G || !gyro || e.gamma == null) return; G.target = clamp(e.gamma / 40 * .42, -.42, .42); }
+addEventListener('keydown', e => {
+  if (!live()) return;
+  if (G.phase === 'load'){
+    if (e.key === 'ArrowLeft') G.aimX -= 14;
+    if (e.key === 'ArrowRight') G.aimX += 14;
+    if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowDown'){ e.preventDefault(); placeHold(); }
+  } else {
+    if (e.key === 'ArrowLeft') G.target = clamp(G.target - .06, -.5, .5);
+    if (e.key === 'ArrowRight') G.target = clamp(G.target + .06, -.5, .5);
+  }
+  if (e.key === 'Escape') pause();
+});
+// 歪手机控制（走路的时候）
+function onTilt(e){ if (!G || !gyro || e.gamma == null || G.phase !== 'walk') return; G.target = clamp(e.gamma / 40 * .5, -.5, .5); }
 $('btnGyro').addEventListener('click', async () => {
   if (gyro){ gyro = false; $('btnGyro').classList.remove('on'); removeEventListener('deviceorientation', onTilt); big('体感关了', '用手指拖动'); return; }
   try {
     if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function'){ const r = await DeviceOrientationEvent.requestPermission(); if (r !== 'granted'){ big('没有权限', '用手指拖动'); return; } }
     if (!('DeviceOrientationEvent' in window)){ big('这台设备不支持', '用手指拖动'); return; }
-    gyro = true; $('btnGyro').classList.add('on'); addEventListener('deviceorientation', onTilt); big('体感开了', '歪手机控制托盘');
+    gyro = true; $('btnGyro').classList.add('on'); addEventListener('deviceorientation', onTilt); big('体感开了', '走路时歪手机控制托盘');
   } catch (e){ big('体感用不了', '用手指拖动'); }
 });
 
@@ -798,6 +998,10 @@ const Sound = (() => {
   A.tick = () => tone(880, .06, .06, 'triangle');
   A.crash = () => { noise(.45, .5, 1500, 6000); for (let k = 0; k < 8; k++) tone(2500 + Math.random() * 3000, .08, .04, 'sine', .02 + k * .04); };
   A.served = () => [523, 659, 784, 1047].forEach((f, k) => tone(f, .5, .08, 'triangle', k * .08));
+  A.whoa = () => { tone(700, .25, .05, 'triangle', 0, 300); };
+  A.place = () => { tone(420, .1, .08, 'sine', 0, 300); noise(.06, .08, 900, 400, 'lowpass'); };
+  A.go = () => { tone(660, .12, .06, 'triangle'); tone(880, .18, .06, 'triangle', .1); };
+  A.slip = () => { tone(1400, .25, .05, 'sawtooth', 0, 700); };
   A.hey = () => { tone(520, .12, .08, 'square', 0, 680); tone(620, .16, .06, 'square', .14, 500); };
   A.bump = () => { noise(.15, .3, 300, 120, 'lowpass'); tone(110, .2, .2); };
   A.over = () => [392, 330, 262].forEach((f, k) => tone(f, .5, .1, 'triangle', k * .2));
@@ -811,10 +1015,9 @@ $('btnStart').addEventListener('click', start);
 $('btnBoard').addEventListener('click', showBoard);
 $('bestNote').textContent = store.get('best', 0) ? `最好一班上了 ${store.get('best', 0)} 道菜` : '';
 try { await Promise.all([document.fonts.load('40px "Ma Shan Zheng"', '端盘子出菜口红烧肉小笼包糖醋鱼担担面东坡肘烤鸭酒'), document.fonts.load('30px "ZCOOL KuaiLe"', '让一让上菜第桌啪')]); } catch (e){}
-newWorld();
 layout();
 requestAnimationFrame(loop);
-if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__d = {get G(){ return G; }, start, step, get tray(){ return tray; }, get items(){ return items; }, addDish, DISHES, gameOver, shot: () => { draw(performance.now()); return cv.toDataURL('image/jpeg', .8); }};
+if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__d = {get G(){ return G; }, start, step, placeHold, holdPos, dishInfo, levelErr, loadTorque, sag: sagNow, LIP, DISHES, gameOver, shot: () => { draw(performance.now()); return cv.toDataURL('image/jpeg', .8); }};
 })();
 </script>
 
